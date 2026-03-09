@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getAppSettingsSnapshot,
   getAppModelOptions,
   getSlashModelOptions,
   normalizeCustomModelSlugs,
@@ -8,6 +9,45 @@ import {
   shouldShowFastTierIcon,
   resolveAppModelSelection,
 } from "./appSettings";
+function createLocalStorageMock(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.get(key) ?? null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value);
+    },
+  };
+}
+
+beforeEach(() => {
+  vi.stubGlobal(
+    "window",
+    {
+      localStorage: createLocalStorageMock(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } satisfies Partial<Window>,
+  );
+});
+
+afterEach(() => {
+  window.localStorage.clear();
+  vi.unstubAllGlobals();
+});
 
 describe("normalizeCustomModelSlugs", () => {
   it("normalizes aliases, removes built-ins, and deduplicates values", () => {
@@ -101,5 +141,33 @@ describe("shouldShowFastTierIcon", () => {
     expect(shouldShowFastTierIcon("gpt-5.4", "fast")).toBe(true);
     expect(shouldShowFastTierIcon("gpt-5.4", "auto")).toBe(false);
     expect(shouldShowFastTierIcon("gpt-5.3-codex", "fast")).toBe(false);
+  });
+});
+
+describe("getAppSettingsSnapshot", () => {
+  it("preserves legacy persisted settings when Claude fields are missing", () => {
+    window.localStorage.setItem(
+      "t3code:app-settings:v1",
+      JSON.stringify({
+        codexBinaryPath: "/usr/local/bin/codex",
+        codexHomePath: "/tmp/.codex",
+        confirmThreadDelete: false,
+        enableAssistantStreaming: true,
+        codexServiceTier: "fast",
+        customCodexModels: ["internal/model"],
+      }),
+    );
+
+    expect(getAppSettingsSnapshot()).toMatchObject({
+      codexBinaryPath: "/usr/local/bin/codex",
+      codexHomePath: "/tmp/.codex",
+      confirmThreadDelete: false,
+      enableAssistantStreaming: true,
+      codexServiceTier: "fast",
+      customCodexModels: ["internal/model"],
+      claudeBinaryPath: "",
+      claudeHomePath: "",
+      customClaudeCodeModels: [],
+    });
   });
 });

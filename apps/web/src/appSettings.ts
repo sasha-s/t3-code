@@ -28,9 +28,16 @@ const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  claudeCode: new Set(getModelOptions("claudeCode").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
+  claudeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  claudeHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
   codexBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
@@ -43,6 +50,9 @@ const AppSettingsSchema = Schema.Struct({
   ),
   codexServiceTier: AppServiceTierSchema.pipe(Schema.withConstructorDefault(() => Option.some("auto"))),
   customCodexModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  customClaudeCodeModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
 });
@@ -76,14 +86,14 @@ let cachedRawSettings: string | null | undefined;
 let cachedSnapshot: AppSettings = DEFAULT_APP_SETTINGS;
 
 export function normalizeCustomModelSlugs(
-  models: Iterable<string | null | undefined>,
+  models: Iterable<string | null | undefined> | undefined,
   provider: ProviderKind = "codex",
 ): string[] {
   const normalizedModels: string[] = [];
   const seen = new Set<string>();
   const builtInModelSlugs = BUILT_IN_MODEL_SLUGS_BY_PROVIDER[provider];
 
-  for (const candidate of models) {
+  for (const candidate of models ?? []) {
     const normalized = normalizeModelSlug(candidate, provider);
     if (
       !normalized ||
@@ -108,12 +118,16 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customClaudeCodeModels: normalizeCustomModelSlugs(
+      settings.customClaudeCodeModels,
+      "claudeCode",
+    ),
   };
 }
 
 export function getAppModelOptions(
   provider: ProviderKind,
-  customModels: readonly string[],
+  customModels: readonly string[] | undefined,
   selectedModel?: string | null,
 ): AppModelOption[] {
   const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) => ({
@@ -150,7 +164,7 @@ export function getAppModelOptions(
 
 export function resolveAppModelSelection(
   provider: ProviderKind,
-  customModels: readonly string[],
+  customModels: readonly string[] | undefined,
   selectedModel: string | null | undefined,
 ): string {
   const options = getAppModelOptions(provider, customModels, selectedModel);
@@ -182,7 +196,7 @@ export function resolveAppModelSelection(
 
 export function getSlashModelOptions(
   provider: ProviderKind,
-  customModels: readonly string[],
+  customModels: readonly string[] | undefined,
   query: string,
   selectedModel?: string | null,
 ): AppModelOption[] {
@@ -211,7 +225,30 @@ function parsePersistedSettings(value: string | null): AppSettings {
   }
 
   try {
-    return normalizeAppSettings(Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema))(value));
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return DEFAULT_APP_SETTINGS;
+    }
+
+    const legacyCompatPayload: unknown = {
+      ...DEFAULT_APP_SETTINGS,
+      ...parsed,
+      claudeBinaryPath:
+        typeof (parsed as { claudeBinaryPath?: unknown }).claudeBinaryPath === "string"
+          ? (parsed as { claudeBinaryPath: string }).claudeBinaryPath
+          : "",
+      claudeHomePath:
+        typeof (parsed as { claudeHomePath?: unknown }).claudeHomePath === "string"
+          ? (parsed as { claudeHomePath: string }).claudeHomePath
+          : "",
+      customClaudeCodeModels: Array.isArray(
+        (parsed as { customClaudeCodeModels?: unknown }).customClaudeCodeModels,
+      )
+        ? (parsed as { customClaudeCodeModels: string[] }).customClaudeCodeModels
+        : [],
+    };
+
+    return normalizeAppSettings(Schema.decodeUnknownSync(AppSettingsSchema)(legacyCompatPayload));
   } catch {
     return DEFAULT_APP_SETTINGS;
   }
